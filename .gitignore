@@ -1,0 +1,6 @@
+__pycache__/*
+
+raw_data/*
+data/*
+trained_models/*
+*.png
