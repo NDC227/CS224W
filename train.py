@@ -1,104 +1,123 @@
+import argparse
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch_geometric.nn import GCNConv
+from torch_geometric.loader import DataLoader
+from torch.optim import Adam
+from tqdm import tqdm
 
+# Import both architectures and your custom loss function
 from models.baseline_model import BaselineSeismicGNN
 from loss_functions.reconstruction_loss import ReconstructionLoss
-from utils import *
 
-from torch_geometric.loader import DataLoader
-
-def train_epoch(model, loader, optimizer, criterion, device, mask_ratio=0.25):
+def train_epoch(model, loader, optimizer, criterion, device):
+    """
+    Executes a single training epoch using pre-masked data attributes
+    where the model output shape matches the ground truth targets (batch.y).
+    """
     model.train()
     total_loss = 0.0
-    total_graphs = 0
     
-    for batch in loader:
+    for batch in tqdm(loader):
         batch = batch.to(device)
         optimizer.zero_grad()
+        # print("batch", batch)
         
-        # Apply random masking
-        x_masked, target_mask, mask_channel = apply_node_masking(batch, mask_ratio=mask_ratio)
+        # 1. Extract inputs from the pre-masked PyG batch object
+        # batch.x: Input waveforms (with target nodes already zeroed out) -> Shape: (sum(N), T, 3)
+        # batch.mask_channel: Binary indicator feature channel -> Shape: (sum(N), 1)
+        x_masked = batch.x
+        mask_channel = batch.mask_channel
         
-        # Forward pass
+        # Ground truth waveforms for the masked targets -> Shape: (num_targets_in_batch, T, 3)
+        true_waveforms = batch.y 
+        
+        # 2. Forward pass: Model automatically isolates target nodes and returns (num_targets, T, C)
         pred = model(x_masked, batch.pos, batch.edge_index, mask_channel)
+
+        # print(pred.shape, true_waveforms.shape)
+        # 3. Compute loss directly between predictions and ground truth targets
+        # (Note: Since `pred` and `true_waveforms` are already aligned to the target nodes, 
+        # you no longer need a boolean mask index in your criterion call!)
+        loss = criterion(pred, true_waveforms)
         
-        # Compute loss on target nodes
-        loss = criterion(pred, batch.x, target_mask)
+        # 4. Backpropagation & optimization step
         loss.backward()
         optimizer.step()
         
         total_loss += loss.item() * batch.num_graphs
-        total_graphs += batch.num_graphs
         
-    return total_loss / total_graphs
+    return total_loss / len(loader.dataset)
 
-@torch.no_grad()
-def evaluate(model, loader, criterion, device, mask_ratio=0.25):
+
+def evaluate(model, loader, criterion, device):
+    """Evaluates the model on validation or test sets without gradient updates."""
     model.eval()
     total_loss = 0.0
-    total_graphs = 0
     
-    for batch in loader:
-        batch = batch.to(device)
-        
-        # Apply deterministic or random node masking
-        x_masked, target_mask, mask_channel = apply_node_masking(batch, mask_ratio=mask_ratio)
-        
-        pred = model(x_masked, batch.pos, batch.edge_index, mask_channel)
-        loss = criterion(pred, batch.x, target_mask)
-        
-        total_loss += loss.item() * batch.num_graphs
-        total_graphs += batch.num_graphs
-        
-    return total_loss / total_graphs
+    with torch.no_grad():
+        for batch in loader:
+            batch = batch.to(device)
+            
+            x_masked = batch.x
+            mask_channel = batch.mask_channel
+            true_waveforms = batch.y
+            
+            pred = model(x_masked, batch.pos, batch.edge_index, mask_channel)
+            loss = criterion(pred, true_waveforms)
+            
+            total_loss += loss.item() * batch.num_graphs
+            
+    return total_loss / len(loader.dataset)
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Unified Seismic Wavefield Reconstruction Training")
+    parser.add_argument("--model_type", type=str, required=True, choices=["baseline", "experimental"],
+                        help="Select whether to train the baseline or experimental model.")
+    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    return parser.parse_args()
 
 def main():
+    args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device} | Training Model: {args.model_type.upper()}")
     
-    # 1. Load saved dataset splits from .pt files
-    train_data = torch.load("data/train_seismic_graphs.pt", weights_only=False)
-    val_data = torch.load("data/val_seismic_graphs.pt", weights_only=False)
-    test_data = torch.load("data/test_seismic_graphs.pt", weights_only=False)
-
-    train_data = [normalize_data(d) for d in train_data]
-    val_data = [normalize_data(d) for d in val_data]
-    test_data = [normalize_data(d) for d in test_data]
+    # 1. Load Data
+    train_data = torch.load("data/train_seismic_graphs_processed.pt", weights_only=False)
+    val_data = torch.load("data/val_seismic_graphs_processed.pt", weights_only=False)
     
-    train_loader = DataLoader(train_data, batch_size=16, shuffle=True)
-    val_loader = DataLoader(val_data, batch_size=16, shuffle=False)
-    test_loader = DataLoader(test_data, batch_size=16, shuffle=False)
+    train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
+    val_loader = DataLoader(val_data, batch_size=args.batch_size, shuffle=False)
     
-    # Inspect dataset dimensions from first object
     sample_data = train_data[0]
-    time_steps = sample_data.x.size(1)   # e.g., T time steps
-    in_channels = sample_data.x.size(2)  # e.g., C=3 channels (E, N, Z)
+    time_steps = sample_data.x.size(1)
+    in_channels = sample_data.x.size(2)
     
-    # 2. Instantiate Model, Optimizer, and Loss
-    model = BaselineSeismicGNN(
-        in_channels=in_channels,
-        time_steps=time_steps,
-        hidden_dim=64
-    ).to(device)
-    
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-4)
-    criterion = ReconstructionLoss(spectral_weight=0.1)
+    # 2. Dynamically Instantiate Model based on argument
+    if args.model_type == "baseline":
+        model = BaselineSeismicGNN(in_channels=in_channels, time_steps=time_steps, hidden_dim=256).to(device)
+        model_save_path = "trained_models/seismic_baseline_model.pth"
+    elif args.model_type == "experimental":
+        pass
+    else:
+        raise ValueError(f"Unknown model type: {args.model_type}")
+        
+    optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    criterion = ReconstructionLoss(spectral_weight=0.5, envelope_weight=1.0)
     
     # 3. Training Loop
-    epochs = 20
-    for epoch in range(1, epochs + 1):
-        train_loss = train_epoch(model, train_loader, optimizer, criterion, device, mask_ratio=0.25)
-        val_loss = evaluate(model, val_loader, criterion, device, mask_ratio=0.25)
-        print(f"Epoch {epoch:02d} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f}")
+    best_val_loss = float('inf')
+    for epoch in range(1, args.epochs + 1):
+        train_loss = train_epoch(model, train_loader, optimizer, criterion, device)
+        val_loss = evaluate(model, val_loader, criterion, device)
         
-    # 4. Final Evaluation on Test Set
-    test_loss = evaluate(model, test_loader, criterion, device, mask_ratio=0.25)
-    print(f"\nFinal Test Masked Reconstruction Loss: {test_loss:.6f}")
+        print(f"Epoch {epoch:02d}/{args.epochs:02d} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f}")
+        
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(model.state_dict(), model_save_path)
+            print(f"  --> Saved new best checkpoint to {model_save_path}")
 
-    # 5. Save the trained model
-    torch.save(model.state_dict(), "trained_models/seismic_baseline_model.pth")
-    print("Model saved to trained_models/seismic_baseline_model.pth")
-
+# python train.py --model_type baseline --epochs 20
 if __name__ == "__main__":
     main()

@@ -42,7 +42,8 @@ class BaselineSeismicGNN(nn.Module):
             x: Input waveforms tensor of shape (N, T, C)
             pos: 3D spatial coordinates tensor of shape (N, 3)
             edge_index: Graph topology edge indices tensor of shape (2, E)
-            mask_channel: Binary indicator channel tensor of shape (N, 1)
+            mask_channel: Binary indicator channel tensor of shape (N, 1), 
+                          where 1.0 indicates a masked target node to reconstruct.
         """
         N, T, C = x.shape
         
@@ -60,11 +61,25 @@ class BaselineSeismicGNN(nn.Module):
         # Combine temporal signal and spatial positional embeddings
         h = torch.cat([h_temp, h_pos], dim=-1)            # Shape: (N, hidden_dim * 2)
         
-        # Perform spatial message passing
+        # Perform spatial message passing across all nodes
         h = F.relu(self.spatial_gcn1(h, edge_index))
         h = F.relu(self.spatial_gcn2(h, edge_index))
+
+        # Automatically find target nodes where mask_channel == 1
+        target_indices = torch.where(mask_channel.squeeze(-1) != 1.0)[0]
+
+        if len(target_indices) == 0:
+            raise ValueError("No masked target nodes found in mask_channel (all values are 0).")
         
-        # Decode to target full time-series ground motion
-        out = self.decoder(h)                             # Shape: (N, T * C)
-        out = out.view(N, T, C)                           # Shape: (N, T, C)
+        # Isolate only the target node embeddings -> Shape: (num_targets, hidden_dim * 2)
+        h_target = h[target_indices]                      
+        
+        # Decode only for the target nodes -> Shape: (num_targets, T * C)
+        out = self.decoder(h_target)                      
+        out = out.view(-1, T, C)                          # Shape: (num_targets, T, C)
+        
+        # If exactly one target node was masked, squeeze the batch/node dimension to output (T, C)
+        if out.size(0) == 1:
+            out = out.squeeze(0)                          # Shape: (T, C)
+            
         return out

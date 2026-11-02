@@ -1,119 +1,109 @@
+import argparse
 import torch
 import matplotlib.pyplot as plt
-from torch_geometric.data import Data
 
-from train import BaselineSeismicGNN, apply_node_masking
-from utils import normalize_data  # Import normalization function
+# Import all possible model architectures and your normalization utility
+from models.baseline_model import BaselineSeismicGNN
+# from utils import normalize_data
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Unified Seismic Waveform Reconstruction Evaluation")
+    parser.add_argument("--model_type", type=str, required=True, choices=["baseline", "experimental"],
+                        help="Select which model architecture to evaluate.")
+    parser.add_argument("--model_path", type=str, required=True, help="Path to trained .pth weights file.")
+    parser.add_argument("--test_data_path", type=str, default="data/test_seismic_graphs_processed.pt", help="Path to test dataset.")
+    parser.add_argument("--sample_idx", type=int, default=0, help="Index of the graph sample in the test set.")
+    return parser.parse_args()
 
-def visualize_reconstruction(
-    model_path, test_data_path, sample_idx=0, mask_ratio=0.25
-):
+def visualize_reconstruction():
+    args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-
-    # 1. Load test dataset and select a sample graph
-    test_data = torch.load(test_data_path, weights_only=False)
-    if isinstance(test_data, list):
-        sample_data = test_data[sample_idx]
+    print(f"Using device: {device} | Evaluating Model: {args.model_type.upper()}")
+    
+    # 1. Load test dataset and select sample graph
+    test_data = torch.load(args.test_data_path, weights_only=False)
+    sample_data = test_data[args.sample_idx].to(device)
+    print(sample_data)
+    
+    # 2. Inspect dimensions and dynamically instantiate the chosen model
+    time_steps = sample_data.x.size(1)   # e.g., 6000
+    in_channels = sample_data.x.size(2)  # e.g., 3
+    
+    if args.model_type == "baseline":
+        model = BaselineSeismicGNN(in_channels=in_channels, time_steps=time_steps, hidden_dim=256).to(device)
+    elif args.model_type == "experimental":
+        pass
     else:
-        sample_data = test_data[sample_idx]
-
-    sample_data = sample_data.to(device)
-
-    # 2. Apply Z-score normalization prior to masking and model forward pass
-    sample_data = normalize_data(sample_data.clone())
-
-    # 3. Inspect dimensions and initialize model
-    time_steps = sample_data.x.size(1)
-    in_channels = sample_data.x.size(2)
-
-    model = BaselineSeismicGNN(
-        in_channels=in_channels, time_steps=time_steps, hidden_dim=64
-    ).to(device)
-
+        raise ValueError(f"Unknown model type: {args.model_type}")
+        
     # Load trained weights
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.load_state_dict(torch.load(args.model_path, map_location=device, weights_only=False))
     model.eval()
     print("Model weights loaded successfully.")
-
-    # 4. Apply node masking on normalized input
-    with torch.no_grad():
-        x_masked, target_mask, mask_channel = apply_node_masking(
-            sample_data, mask_ratio=mask_ratio
-        )
-
-        # Forward pass with normalized x and pos
-        pred = model(
-            x_masked, sample_data.pos, sample_data.edge_index, mask_channel
-        )
-
-    # 5. Extract a masked target node to visualize
+    
+    # 3. Extract pre-masked inputs stored in the Data object
+    x_masked = sample_data.x
+    target_mask = sample_data.target_mask.bool()
+    mask_channel = sample_data.mask_channel
+    
     masked_indices = torch.where(target_mask)[0]
     if len(masked_indices) == 0:
-        print(
-            "Warning: No nodes were masked with the current random seed. Try"
-            " running again."
-        )
+        print("Warning: No target nodes found via target_mask in this sample.")
         return
-
+        
     target_node_idx = masked_indices[0].item()
-    print(
-        "Visualizing reconstruction for masked target node index:"
-        f" {target_node_idx}"
-    )
-
-    # Move normalized waveforms to CPU and convert to NumPy for plotting
-    true_waveform = sample_data.x[target_node_idx].cpu().numpy()  # Shape: (T, C)
-    pred_waveform = pred[target_node_idx].cpu().numpy()  # Shape: (T, C)
-
+    print(f"Visualizing reconstruction for masked target station node index: {target_node_idx}")
+    
+    # 4. Forward pass: Model automatically isolates target nodes and returns (num_targets, T, C) or (T, C)
+    with torch.no_grad():
+        pred = model(x_masked, sample_data.pos, sample_data.edge_index, mask_channel)
+        
+    # Handle matching prediction to our specific target_node_idx
+    if pred.ndim == 3:
+        # Multiple targets: find which position in masked_indices corresponds to target_node_idx
+        target_pos = (masked_indices == target_node_idx).nonzero(as_tuple=True)[0].item()
+        pred_target = pred[target_pos]  # Shape: (T, C)
+    else:
+        pred_target = pred              # Shape: (T, C)
+        
+    pred_waveform = pred_target.cpu().numpy()  # Shape: (T, C)
+    
+    # 5. Determine ground truth waveform
+    if hasattr(sample_data, 'y') and sample_data.y is not None:
+        if sample_data.y.shape == sample_data.x.shape:
+            # y contains all nodes: shape (N, T, C)
+            true_waveform = sample_data.y[target_node_idx].cpu().numpy()
+        elif pred.ndim == 3 and sample_data.y.shape == pred.shape:
+            # y contains only targets with matching shape
+            target_pos = (masked_indices == target_node_idx).nonzero(as_tuple=True)[0].item()
+            true_waveform = sample_data.y[target_pos].cpu().numpy()
+        else:
+            true_waveform = sample_data.y[0].cpu().numpy() if sample_data.y.ndim == 3 else sample_data.y.cpu().numpy()
+    else:
+        # Fallback if y isn't available
+        true_waveform = sample_data.x[target_node_idx].cpu().numpy()
+        
     # 6. Plot the 3 components (East, North, Vertical)
-    channel_names = [
-        "East Component (E)",
-        "North Component (N)",
-        "Vertical Component (Z)",
-    ]
+    channel_names = ['East Component (E)', 'North Component (N)', 'Vertical Component (Z)']
     fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
-
+    
     for c in range(3):
-        axes[c].plot(
-            true_waveform[:, c],
-            label="Ground Truth (Normalized)",
-            color="black",
-            alpha=0.8,
-            linewidth=1.5,
-        )
-        axes[c].plot(
-            pred_waveform[:, c],
-            label="GNN Reconstructed",
-            color="crimson",
-            linestyle="--",
-            alpha=0.8,
-            linewidth=1.5,
-        )
+        axes[c].plot(true_waveform[:, c], label='Ground Truth', color='black', alpha=0.8, linewidth=1.5)
+        axes[c].plot(pred_waveform[:, c], label=f'{args.model_type.capitalize()} Reconstructed', color='crimson', linestyle='--', alpha=0.8, linewidth=1.5)
         axes[c].set_ylabel(channel_names[c], fontsize=11)
-        axes[c].legend(loc="upper right", frameon=True)
-        axes[c].grid(True, linestyle=":", alpha=0.6)
-
-    axes[-1].set_xlabel("Time Steps", fontsize=11)
-    plt.suptitle(
-        "Seismic Waveform Reconstruction at Unobserved Station (Node"
-        f" {target_node_idx})",
-        fontsize=14,
-        fontweight="bold",
-    )
+        axes[c].legend(loc='upper right', frameon=True)
+        axes[c].grid(True, linestyle=':', alpha=0.6)
+        
+    axes[-1].set_xlabel('Time Steps', fontsize=11)
+    plt.suptitle(f'[{args.model_type.upper()}] Waveform Reconstruction at Target Node {target_node_idx}', fontsize=14, fontweight='bold')
     plt.tight_layout()
-
-    # Save figure and show plot
-    plt.savefig("waveform_reconstruction_result.png", dpi=300)
-    print("Plot saved as 'waveform_reconstruction_result.png'")
+    
+    output_filename = f'{args.model_type}_reconstruction_result.png'
+    plt.savefig(output_filename, dpi=300)
+    print(f"Plot saved as '{output_filename}'")
     plt.show()
 
 
-if __name__ == "__main__":
-    visualize_reconstruction(
-        model_path="trained_models/seismic_baseline_model.pth",
-        test_data_path="data/test_seismic_graphs.pt",
-        sample_idx=0,
-        mask_ratio=0.25,
-    )
+# python eval.py --model_type baseline --model_path trained_models/seismic_baseline_model.pth --sample_idx 0
+if __name__ == '__main__':
+    visualize_reconstruction()
