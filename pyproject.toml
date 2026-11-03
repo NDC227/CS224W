@@ -5,7 +5,17 @@ build-backend = "setuptools.build_meta"
 [project] 
 name = "cs224w_final_project" 
 version = "0.1.0" 
-dependencies = []
+dependencies = [
+    "h5py",
+    "matplotlib",
+    "networkx",
+    "numpy",
+    "obspy",
+    "pandas",
+    "torch",
+    "torch-geometric",
+    "tqdm",
+]
 
 [tool.setuptools.packages.find] 
 where = ["."] 

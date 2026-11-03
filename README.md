@@ -11,4 +11,10 @@ final_project
 └───trained_models
 ```
 
-Taewoo says `hello world!`
+## Installation
+
+Install the project and its Python dependencies with:
+
+```powershell
+python -m pip install -e .
+```
