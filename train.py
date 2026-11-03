@@ -70,11 +70,20 @@ def evaluate(model, loader, criterion, device):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Unified Seismic Wavefield Reconstruction Training")
-    parser.add_argument("--model_type", type=str, required=True, choices=["baseline", "experimental"],
+    parser.add_argument("--model_type",
+                        type=str, 
+                        choices=["baseline", "experimental"], 
+                        default="baseline",
                         help="Select whether to train the baseline or experimental model.")
-    parser.add_argument("--epochs", type=int, default=20)
-    parser.add_argument("--batch_size", type=int, default=1)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--epochs", 
+                        type=int, 
+                        default=20)
+    parser.add_argument("--batch_size", 
+                        type=int, 
+                        default=1)
+    parser.add_argument("--lr", 
+                        type=float, 
+                        default=1e-3)
     return parser.parse_args()
 
 def main():
