@@ -3,7 +3,13 @@
 *.egg-info/*
 
 raw_data/*
+!raw_data/.gitkeep
+
 data/*
+!data/.gitkeep
+
 trained_models/*
+!trained_models/.gitkeep
+
 *.png
 **/*.ipynb
