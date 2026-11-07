@@ -5,7 +5,8 @@ from torch.optim import Adam
 from tqdm import tqdm
 
 # Import both architectures and your custom loss function
-from models.baseline_model import BaselineSeismicGNN
+from models.baseline_model import BaselineEncoder, BaselineDecoder, BaselineSeismicGNN
+from models.star_encoder_only import STAREncoder, STAREncoderSeismicGNN
 from loss_functions.reconstruction_loss import ReconstructionLoss
 
 def train_epoch(model, loader, optimizer, criterion, device):
@@ -72,7 +73,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Unified Seismic Wavefield Reconstruction Training")
     parser.add_argument("--model_type",
                         type=str, 
-                        choices=["baseline", "experimental"], 
+                        choices=["baseline", "star_only", "experimental"], 
                         default="baseline",
                         help="Select whether to train the baseline or experimental model.")
     parser.add_argument("--epochs", 
@@ -105,7 +106,13 @@ def main():
     # 2. Dynamically Instantiate Model based on argument
     if args.model_type == "baseline":
         model = BaselineSeismicGNN(in_channels=in_channels, time_steps=time_steps, hidden_dim=256).to(device)
-        model_save_path = "trained_models/seismic_baseline_model.pth"
+        model_save_path = "trained_models/baseline_model.pth"
+    if args.model_type == "star_only":
+        #in_channels, time_steps, hidden_dim, pos_dim
+        encoder = STAREncoder(in_channels, time_steps, hidden_dim=256, pos_dim=3)
+        decoder = BaselineDecoder(in_channels, time_steps, hidden_dim=256)
+        model = STAREncoderSeismicGNN(star_encoder=encoder, decoder=decoder).to(device)
+        model_save_path = "trained_models/star_only_model.pth"
     elif args.model_type == "experimental":
         pass
     else:
@@ -128,5 +135,6 @@ def main():
             print(f"  --> Saved new best checkpoint to {model_save_path}")
 
 # python train.py --model_type baseline --epochs 20
+# python train.py --model_type star_only --epochs 20
 if __name__ == "__main__":
     main()

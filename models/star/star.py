@@ -291,7 +291,7 @@ class TransformerModel(nn.Module):
         self.ninp = ninp
 
     def forward(self, src, mask):
-        n_mask = mask + torch.eye(mask.shape[0], mask.shape[0]).cuda()
+        n_mask = mask + torch.eye(mask.shape[0], mask.shape[0])
         n_mask = n_mask.float().masked_fill(n_mask == 0., float(-1e20)).masked_fill(n_mask == 1., float(0.0))
         output = self.transformer_encoder(src, mask=n_mask)
 
