@@ -119,3 +119,58 @@ class BaselineSeismicGNN(nn.Module):
         h = self.encoder(x, pos, edge_index, mask_channel)
         out = self.decoder(h, mask_channel)
         return out
+
+class BaselineSeismicGNNWithAux(nn.Module):
+    """
+    Wrapper class combining the Baseline Encoder, Waveform Decoder, 
+    and Auxiliary Prediction Heads for P/S arrivals and Back-Azimuth.
+    """
+    def __init__(self, in_channels=3, time_steps=500, hidden_dim=64, pos_dim=3):
+        super(BaselineSeismicGNNWithAux, self).__init__()
+        self.encoder = BaselineEncoder(in_channels, time_steps, hidden_dim, pos_dim)
+        self.waveform_decoder = BaselineDecoder(in_channels, time_steps, hidden_dim)
+        
+        # --- Dedicated Auxiliary Prediction Heads ---
+        # 1. P-Wave Arrival Head (predicts scalar sample index / normalized time)
+        self.head_p_arrival = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, 1)
+        )
+        
+        # 2. S-Wave Arrival Head (predicts scalar sample index / normalized time)
+        self.head_s_arrival = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, 1)
+        )
+        
+        # 3. Back-Azimuth Head (predicts 2D continuous [sin(rad), cos(rad)] vector)
+        self.head_baz = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, 2)
+        )
+
+    def forward(self, x, pos, edge_index, mask_channel, batch=None):
+        """
+        Forward pass returning both the reconstructed waveform 
+        and the auxiliary target predictions for all nodes.
+        """
+        # 1. Get node latent representations (Shape: N, hidden_dim)
+        h = self.encoder(x, pos, edge_index, mask_channel)
+        
+        # 2. Reconstruct waveform for masked target nodes
+        waveform_out = self.waveform_decoder(h, mask_channel)
+        
+        # 3. Predict auxiliary targets across all nodes (or filter to target/observed nodes as needed)
+        p_arrival_pred = self.head_p_arrival(h).squeeze(-1)  # Shape: (N,)
+        s_arrival_pred = self.head_s_arrival(h).squeeze(-1)  # Shape: (N,)
+        baz_pred = self.head_baz(h)                          # Shape: (N, 2)
+        
+        return {
+            "waveform": waveform_out,
+            "p_arrival": p_arrival_pred,
+            "s_arrival": s_arrival_pred,
+            "baz": baz_pred
+        }

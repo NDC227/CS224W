@@ -1,11 +1,17 @@
 import argparse
 import torch
+import torch.nn.functional as F
 from torch_geometric.loader import DataLoader
 from torch.optim import Adam
 from tqdm import tqdm
 
-# Import both architectures and your custom loss function
-from models.baseline_model import BaselineEncoder, BaselineDecoder, BaselineSeismicGNN
+# Import architectures and custom loss function
+from models.baseline_model import (
+    BaselineEncoder, 
+    BaselineDecoder, 
+    BaselineSeismicGNN, 
+    BaselineSeismicGNNWithAux
+)
 from models.gno import GNO_Decoder
 from models.star_encoder_only import (
     STAREncoder,
@@ -14,49 +20,65 @@ from models.star_encoder_only import (
 )
 from loss_functions.reconstruction_loss import ReconstructionLoss
 
-def train_epoch(model, loader, optimizer, criterion, device):
+def train_epoch(model, loader, optimizer, criterion, device, is_aux_model=False):
     """
-    Executes a single training epoch using pre-masked data attributes
-    where the model output shape matches the ground truth targets (batch.y).
+    Executes a single training epoch supporting both standard waveform reconstruction
+    and multi-task auxiliary supervision.
     """
     model.train()
     total_loss = 0.0
-    
+
+    batch_i = 0
     for batch in tqdm(loader):
         batch = batch.to(device)
         optimizer.zero_grad()
-        # print("batch", batch)
         
         # 1. Extract inputs from the pre-masked PyG batch object
-        # batch.x: Input waveforms (with target nodes already zeroed out) -> Shape: (sum(N), T, 3)
-        # batch.mask_channel: Binary indicator feature channel -> Shape: (sum(N), 1)
         x_masked = batch.x
         mask_channel = batch.mask_channel
-        
-        # Ground truth waveforms for the masked targets -> Shape: (num_targets_in_batch, T, 3)
         true_waveforms = batch.y 
         
-        # 2. Forward pass: Model automatically isolates target nodes and returns (num_targets, T, C)
+        # 2. Forward pass
+        # If using auxiliary model, `pred` is a dictionary: {"waveform", "p_arrival", "s_arrival", "baz"}
         pred = model(
             x_masked, batch.pos, batch.edge_index, mask_channel, batch=batch.batch
         )
 
-        # print(pred.shape, true_waveforms.shape)
-        # 3. Compute loss directly between predictions and ground truth targets
-        # (Note: Since `pred` and `true_waveforms` are already aligned to the target nodes, 
-        # you no longer need a boolean mask index in your criterion call!)
-        loss = criterion(pred, true_waveforms)
+        if is_aux_model:
+            waveform_pred = pred["waveform"]
+            
+            # Primary waveform reconstruction loss
+            loss_wave = criterion(waveform_pred, true_waveforms)
+            
+            # Auxiliary losses (computed over observed or applicable nodes using dataset attributes)
+            # Adjust batch attribute names (e.g., batch.p_arrival, batch.obs_mask) to match your dataset schema
+            obs_mask = getattr(batch, "obs_mask", torch.ones_like(pred["p_arrival"], dtype=torch.bool))
+            
+            loss_p = F.mse_loss(pred["p_arrival"][obs_mask], batch.y_p_arrival_norm[obs_mask])
+            loss_s = F.mse_loss(pred["s_arrival"][obs_mask], batch.y_s_arrival_norm[obs_mask])
+            loss_baz = F.mse_loss(pred["baz"][obs_mask], batch.y_baz_norm[obs_mask])
+            
+            # Weighted multi-task loss combination
+            lambda_p, lambda_s, lambda_baz = 0.5, 0.5, 0.2
+            loss = loss_wave + (lambda_p * loss_p) + (lambda_s * loss_s) + (lambda_baz * loss_baz)
+        else:
+            # Standard single-task reconstruction loss
+            loss = criterion(pred, true_waveforms)
         
-        # 4. Backpropagation & optimization step
+        # 3. Backpropagation & optimization step
         loss.backward()
         optimizer.step()
         
         total_loss += loss.item() * batch.num_graphs
+
+        # batch_i += 1
+        # if batch_i % 10 == 0:
+        #     print(loss.item())
         
     return total_loss / len(loader.dataset)
 
 
-def evaluate(model, loader, criterion, device):
+def evaluate(model, loader, criterion, device, is_aux_model=False):
     """Evaluates the model on validation or test sets without gradient updates."""
     model.eval()
     total_loss = 0.0
@@ -72,7 +94,20 @@ def evaluate(model, loader, criterion, device):
             pred = model(
                 x_masked, batch.pos, batch.edge_index, mask_channel, batch=batch.batch
             )
-            loss = criterion(pred, true_waveforms)
+            
+            if is_aux_model:
+                waveform_pred = pred["waveform"]
+                loss_wave = criterion(waveform_pred, true_waveforms)
+                
+                obs_mask = getattr(batch, "obs_mask", torch.ones_like(pred["p_arrival"], dtype=torch.bool))
+                loss_p = F.mse_loss(pred["p_arrival"][obs_mask], batch.y_p_arrival_norm[obs_mask])
+                loss_s = F.mse_loss(pred["s_arrival"][obs_mask], batch.y_s_arrival_norm[obs_mask])
+                loss_baz = F.mse_loss(pred["baz"][obs_mask], batch.y_baz_norm[obs_mask])
+                
+                lambda_p, lambda_s, lambda_baz = 0.5, 0.5, 0.2
+                loss = loss_wave + (lambda_p * loss_p) + (lambda_s * loss_s) + (lambda_baz * loss_baz)
+            else:
+                loss = criterion(pred, true_waveforms)
             
             total_loss += loss.item() * batch.num_graphs
             
@@ -82,9 +117,9 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Unified Seismic Wavefield Reconstruction Training")
     parser.add_argument("--model_type",
                         type=str, 
-                        choices=["baseline", "star_only", "star_gno", "experimental"],
+                        choices=["baseline", "baseline_aux", "star_only", "star_gno", "experimental"],
                         default="baseline",
-                        help="Select whether to train the baseline or experimental model.")
+                        help="Select whether to train the baseline, baseline with aux heads, or experimental model.")
     parser.add_argument("--epochs", 
                         type=int, 
                         default=20)
@@ -111,19 +146,24 @@ def main():
     sample_data = train_data[0]
     time_steps = sample_data.x.size(1)
     in_channels = sample_data.x.size(2)
+    pos_dim = sample_data.pos.size(-1) if hasattr(sample_data, "pos") and sample_data.pos is not None else 3
+    
+    is_aux_model = False
     
     # 2. Dynamically Instantiate Model based on argument
     if args.model_type == "baseline":
-        model = BaselineSeismicGNN(in_channels=in_channels, time_steps=time_steps, hidden_dim=256).to(device)
+        model = BaselineSeismicGNN(in_channels=in_channels, time_steps=time_steps, hidden_dim=256, pos_dim=pos_dim).to(device)
         model_save_path = "trained_models/baseline_model.pth"
+    elif args.model_type == "baseline_aux":
+        model = BaselineSeismicGNNWithAux(in_channels=in_channels, time_steps=time_steps, hidden_dim=256, pos_dim=pos_dim).to(device)
+        model_save_path = "trained_models/baseline_aux_model.pth"
+        is_aux_model = True
     elif args.model_type == "star_only":
-        #in_channels, time_steps, hidden_dim, pos_dim
-        encoder = STAREncoder(in_channels, time_steps, hidden_dim=256, pos_dim=3)
+        encoder = STAREncoder(in_channels, time_steps, hidden_dim=256, pos_dim=pos_dim)
         decoder = BaselineDecoder(in_channels, time_steps, hidden_dim=256)
         model = STAREncoderSeismicGNN(star_encoder=encoder, decoder=decoder).to(device)
         model_save_path = "trained_models/star_only_model.pth"
     elif args.model_type == "star_gno":
-        pos_dim = sample_data.pos.size(-1)
         encoder = STAREncoder(
             in_channels, time_steps, hidden_dim=256, pos_dim=pos_dim
         )
@@ -131,7 +171,7 @@ def main():
             in_channels=in_channels,
             time_steps=time_steps,
             hidden_dim=256,
-            pos_dim=sample_data.pos.size(-1),
+            pos_dim=pos_dim,
         )
         model = STAREncoderGNOSeismicGNN(
             star_encoder=encoder, decoder=decoder
@@ -148,8 +188,8 @@ def main():
     # 3. Training Loop
     best_val_loss = float('inf')
     for epoch in range(1, args.epochs + 1):
-        train_loss = train_epoch(model, train_loader, optimizer, criterion, device)
-        val_loss = evaluate(model, val_loader, criterion, device)
+        train_loss = train_epoch(model, train_loader, optimizer, criterion, device, is_aux_model=is_aux_model)
+        val_loss = evaluate(model, val_loader, criterion, device, is_aux_model=is_aux_model)
         
         print(f"Epoch {epoch:02d}/{args.epochs:02d} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f}")
         
@@ -161,5 +201,6 @@ def main():
 # python train.py --model_type baseline --epochs 20
 # python train.py --model_type star_only --epochs 20
 # python train.py --model_type star_gno --epochs 20
+# python train.py --model_type baseline_aux --epochs 20
 if __name__ == "__main__":
     main()
