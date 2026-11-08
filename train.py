@@ -6,7 +6,12 @@ from tqdm import tqdm
 
 # Import both architectures and your custom loss function
 from models.baseline_model import BaselineEncoder, BaselineDecoder, BaselineSeismicGNN
-from models.star_encoder_only import STAREncoder, STAREncoderSeismicGNN
+from models.gno import GNO_Decoder
+from models.star_encoder_only import (
+    STAREncoder,
+    STAREncoderGNOSeismicGNN,
+    STAREncoderSeismicGNN,
+)
 from loss_functions.reconstruction_loss import ReconstructionLoss
 
 def train_epoch(model, loader, optimizer, criterion, device):
@@ -32,7 +37,9 @@ def train_epoch(model, loader, optimizer, criterion, device):
         true_waveforms = batch.y 
         
         # 2. Forward pass: Model automatically isolates target nodes and returns (num_targets, T, C)
-        pred = model(x_masked, batch.pos, batch.edge_index, mask_channel)
+        pred = model(
+            x_masked, batch.pos, batch.edge_index, mask_channel, batch=batch.batch
+        )
 
         # print(pred.shape, true_waveforms.shape)
         # 3. Compute loss directly between predictions and ground truth targets
@@ -62,7 +69,9 @@ def evaluate(model, loader, criterion, device):
             mask_channel = batch.mask_channel
             true_waveforms = batch.y
             
-            pred = model(x_masked, batch.pos, batch.edge_index, mask_channel)
+            pred = model(
+                x_masked, batch.pos, batch.edge_index, mask_channel, batch=batch.batch
+            )
             loss = criterion(pred, true_waveforms)
             
             total_loss += loss.item() * batch.num_graphs
@@ -73,7 +82,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Unified Seismic Wavefield Reconstruction Training")
     parser.add_argument("--model_type",
                         type=str, 
-                        choices=["baseline", "star_only", "experimental"], 
+                        choices=["baseline", "star_only", "star_gno", "experimental"],
                         default="baseline",
                         help="Select whether to train the baseline or experimental model.")
     parser.add_argument("--epochs", 
@@ -113,6 +122,21 @@ def main():
         decoder = BaselineDecoder(in_channels, time_steps, hidden_dim=256)
         model = STAREncoderSeismicGNN(star_encoder=encoder, decoder=decoder).to(device)
         model_save_path = "trained_models/star_only_model.pth"
+    elif args.model_type == "star_gno":
+        pos_dim = sample_data.pos.size(-1)
+        encoder = STAREncoder(
+            in_channels, time_steps, hidden_dim=256, pos_dim=pos_dim
+        )
+        decoder = GNO_Decoder(
+            in_channels=in_channels,
+            time_steps=time_steps,
+            hidden_dim=256,
+            pos_dim=sample_data.pos.size(-1),
+        )
+        model = STAREncoderGNOSeismicGNN(
+            star_encoder=encoder, decoder=decoder
+        ).to(device)
+        model_save_path = "trained_models/star_gno_model.pth"
     elif args.model_type == "experimental":
         pass
     else:
@@ -136,5 +160,6 @@ def main():
 
 # python train.py --model_type baseline --epochs 20
 # python train.py --model_type star_only --epochs 20
+# python train.py --model_type star_gno --epochs 20
 if __name__ == "__main__":
     main()

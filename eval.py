@@ -4,11 +4,13 @@ import matplotlib.pyplot as plt
 
 # Import all possible model architectures and your normalization utility
 from models.baseline_model import BaselineSeismicGNN
+from models.gno import GNO_Decoder
+from models.star_encoder_only import STAREncoder, STAREncoderGNOSeismicGNN
 # from utils import normalize_data
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Unified Seismic Waveform Reconstruction Evaluation")
-    parser.add_argument("--model_type", type=str, required=True, choices=["baseline", "experimental"],
+    parser.add_argument("--model_type", type=str, required=True, choices=["baseline", "star_gno", "experimental"],
                         help="Select which model architecture to evaluate.")
     parser.add_argument("--model_path", type=str, required=True, help="Path to trained .pth weights file.")
     parser.add_argument("--test_data_path", type=str, default="data/test_seismic_graphs_processed.pt", help="Path to test dataset.")
@@ -31,6 +33,20 @@ def visualize_reconstruction():
     
     if args.model_type == "baseline":
         model = BaselineSeismicGNN(in_channels=in_channels, time_steps=time_steps, hidden_dim=256).to(device)
+    elif args.model_type == "star_gno":
+        pos_dim = sample_data.pos.size(-1)
+        encoder = STAREncoder(
+            in_channels, time_steps, hidden_dim=256, pos_dim=pos_dim
+        )
+        decoder = GNO_Decoder(
+            in_channels=in_channels,
+            time_steps=time_steps,
+            hidden_dim=256,
+            pos_dim=pos_dim,
+        )
+        model = STAREncoderGNOSeismicGNN(
+            star_encoder=encoder, decoder=decoder
+        ).to(device)
     elif args.model_type == "experimental":
         pass
     else:
@@ -56,7 +72,16 @@ def visualize_reconstruction():
     
     # 4. Forward pass: Model automatically isolates target nodes and returns (num_targets, T, C) or (T, C)
     with torch.no_grad():
-        pred = model(x_masked, sample_data.pos, sample_data.edge_index, mask_channel)
+        graph_batch = torch.zeros(
+            sample_data.num_nodes, dtype=torch.long, device=device
+        )
+        pred = model(
+            x_masked,
+            sample_data.pos,
+            sample_data.edge_index,
+            mask_channel,
+            batch=graph_batch,
+        )
         
     # Handle matching prediction to our specific target_node_idx
     if pred.ndim == 3:

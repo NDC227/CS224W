@@ -113,7 +113,7 @@ class STAREncoderSeismicGNN(nn.Module):
         self.encoder = star_encoder
         self.decoder = decoder
 
-    def forward(self, x, pos, edge_index, mask_channel):
+    def encode(self, x, pos, edge_index, mask_channel):
         """
         Matches the baseline forward signature while translating PyG inputs 
         into what the STAR encoder expects internally.
@@ -136,9 +136,11 @@ class STAREncoderSeismicGNN(nn.Module):
             nei_list=nei_list
         )
         
-        # 3. Decode into the target waveform(s)
-        out = self.decoder(h, mask_channel)
-        return out
+        return h
+
+    def forward(self, x, pos, edge_index, mask_channel, batch=None):
+        h = self.encode(x, pos, edge_index, mask_channel)
+        return self.decoder(h, mask_channel)
 
     def _edge_index_to_nei_list(self, edge_index, num_nodes):
         """
@@ -155,3 +157,11 @@ class STAREncoderSeismicGNN(nn.Module):
             adj[edge_index[0], edge_index[1]] = 1.0
             
         return adj
+
+
+class STAREncoderGNOSeismicGNN(STAREncoderSeismicGNN):
+    """STAR encoder paired with a geometry-aware GNO waveform decoder."""
+
+    def forward(self, x, pos, edge_index, mask_channel, batch=None):
+        h = self.encode(x, pos, edge_index, mask_channel)
+        return self.decoder(h, pos, mask_channel, batch=batch)
