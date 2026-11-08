@@ -107,7 +107,7 @@ def main():
     if args.model_type == "baseline":
         model = BaselineSeismicGNN(in_channels=in_channels, time_steps=time_steps, hidden_dim=256).to(device)
         model_save_path = "trained_models/baseline_model.pth"
-    if args.model_type == "star_only":
+    elif args.model_type == "star_only":
         #in_channels, time_steps, hidden_dim, pos_dim
         encoder = STAREncoder(in_channels, time_steps, hidden_dim=256, pos_dim=3)
         decoder = BaselineDecoder(in_channels, time_steps, hidden_dim=256)
