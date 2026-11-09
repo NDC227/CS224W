@@ -12,7 +12,7 @@ from models.baseline_model import (
     BaselineSeismicGNN, 
     BaselineSeismicGNNWithAux
 )
-from models.gno import GNO_Decoder
+from models.gno import GNO_Decoder, GNOSeismicGNN
 from models.star_encoder_only import (
     STAREncoder,
     STAREncoderGNOSeismicGNN,
@@ -117,7 +117,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Unified Seismic Wavefield Reconstruction Training")
     parser.add_argument("--model_type",
                         type=str, 
-                        choices=["baseline", "baseline_aux", "star_only", "star_gno", "experimental"],
+                        choices=["baseline", "baseline_aux", "star_only", "gno_only", "star_gno", "experimental"],
                         default="baseline",
                         help="Select whether to train the baseline, baseline with aux heads, or experimental model.")
     parser.add_argument("--epochs", 
@@ -163,6 +163,16 @@ def main():
         decoder = BaselineDecoder(in_channels, time_steps, hidden_dim=256)
         model = STAREncoderSeismicGNN(star_encoder=encoder, decoder=decoder).to(device)
         model_save_path = "trained_models/star_only_model.pth"
+    elif args.model_type == "gno_only":
+        encoder = BaselineEncoder(in_channels, time_steps, hidden_dim=256, pos_dim=pos_dim)
+        decoder = GNO_Decoder(
+                    in_channels=in_channels,
+                    time_steps=time_steps,
+                    hidden_dim=256,
+                    pos_dim=pos_dim,
+                )
+        model = GNOSeismicGNN(encoder, decoder)
+        model_save_path = "trained_models/gno_only_model.pth"
     elif args.model_type == "star_gno":
         encoder = STAREncoder(
             in_channels, time_steps, hidden_dim=256, pos_dim=pos_dim
@@ -200,6 +210,7 @@ def main():
 
 # python train.py --model_type baseline --epochs 20
 # python train.py --model_type star_only --epochs 20
+# python train.py --model_type gno_only --epochs 20
 # python train.py --model_type star_gno --epochs 20
 # python train.py --model_type baseline_aux --epochs 20
 if __name__ == "__main__":

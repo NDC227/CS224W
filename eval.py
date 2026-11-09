@@ -5,9 +5,9 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 # Import your model architectures (including the auxiliary baseline model)
-from models.baseline_model import BaselineDecoder, BaselineSeismicGNN, BaselineSeismicGNNWithAux
+from models.baseline_model import BaselineEncoder, BaselineDecoder, BaselineSeismicGNN, BaselineSeismicGNNWithAux
 from models.star_encoder_only import STAREncoder, STAREncoderSeismicGNN, STAREncoderGNOSeismicGNN
-from models.gno import GNO_Decoder
+from models.gno import GNO_Decoder, GNOSeismicGNN
 
 # ==========================================
 # 1. Evaluation Metric Classes
@@ -23,7 +23,7 @@ from loss_functions.peak_amplitude_error import PeakAmplitudeErrorMetric
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate Seismic GNN Metrics on Test Set")
-    parser.add_argument("--model_type", type=str, default="baseline", choices=["baseline", "baseline_aux", "star_only", "star_gno"])
+    parser.add_argument("--model_type", type=str, default="baseline", choices=["baseline", "baseline_aux", "star_only", "gno_only", "star_gno"])
     parser.add_argument("--model_path", type=str, required=True, help="Path to trained .pth model weights.")
     parser.add_argument("--test_data_path", type=str, default="data/test_seismic_graphs_processed.pt", help="Path to test dataset.")
     parser.add_argument("--mask_ratio", type=float, default=0.25, help="Ratio of nodes to mask for evaluation.")
@@ -54,6 +54,15 @@ def evaluate():
         encoder = STAREncoder(in_channels, time_steps, hidden_dim=256, pos_dim=pos_dim)
         decoder = BaselineDecoder(in_channels, time_steps, hidden_dim=256)
         model = STAREncoderSeismicGNN(star_encoder=encoder, decoder=decoder).to(device)
+    elif args.model_type == "gno_only":
+        encoder = BaselineEncoder(in_channels, time_steps, hidden_dim=256, pos_dim=pos_dim)
+        decoder = GNO_Decoder(
+                    in_channels=in_channels,
+                    time_steps=time_steps,
+                    hidden_dim=256,
+                    pos_dim=pos_dim,
+                )
+        model = GNOSeismicGNN(encoder, decoder)
     elif args.model_type == "star_gno":
         encoder = STAREncoder(
             in_channels, time_steps, hidden_dim=256, pos_dim=pos_dim
@@ -152,6 +161,7 @@ def evaluate():
 
 # python eval.py --model_type baseline --model_path trained_models/seismic_baseline_model.pth --test_data_path data/test_seismic_graphs_processed.pt
 # python eval.py --model_type star_only --model_path trained_models/star_only_model.pth --test_data_path data/test_seismic_graphs_processed.pt
+# python eval.py --model_type gno_only --model_path trained_models/gno_only_model.pth --test_data_path data/test_seismic_graphs_processed.pt
 # python eval.py --model_type star_gno --model_path trained_models/star_gno_model.pth --test_data_path data/test_seismic_graphs_processed.pt
 # python eval.py --model_type baseline_aux --model_path trained_models/baseline_aux_model.pth --test_data_path data/test_seismic_graphs_processed.pt
 if __name__ == '__main__':

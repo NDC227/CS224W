@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+from models.baseline_model import BaselineEncoder
 
 class GNO_Decoder(nn.Module):
     """Decode node latents into waveforms with a coordinate-conditioned integral operator."""
@@ -88,3 +89,17 @@ class GNO_Decoder(nn.Module):
         if out.size(0) == 1:
             out = out.squeeze(0)
         return out
+
+class GNOSeismicGNN(nn.Module):
+    """
+    Wrapper class combining the Baseline Encoder and Decoder.
+    Outputs a single reconstructed waveform of shape (T, C).
+    """
+    def __init__(self, encoder, decoder):
+        super(GNOSeismicGNN, self).__init__()
+        self.encoder = encoder
+        self.decoder = decoder
+
+    def forward(self, x, pos, edge_index, mask_channel, batch=None):
+        h = self.encoder(x, pos, edge_index, mask_channel)
+        return self.decoder(h, pos, mask_channel, batch=batch)

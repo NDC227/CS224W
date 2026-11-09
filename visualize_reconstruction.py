@@ -3,14 +3,14 @@ import torch
 import matplotlib.pyplot as plt
 
 # Import all possible model architectures and your normalization utility
-from models.baseline_model import BaselineDecoder, BaselineSeismicGNN, BaselineSeismicGNNWithAux
-from models.gno import GNO_Decoder
+from models.baseline_model import BaselineEncoder, BaselineDecoder, BaselineSeismicGNN, BaselineSeismicGNNWithAux
+from models.gno import GNO_Decoder, GNOSeismicGNN
 from models.star_encoder_only import STAREncoder, STAREncoderSeismicGNN, STAREncoderGNOSeismicGNN
 from utils import normalize_data
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Unified Seismic Waveform Reconstruction Evaluation")
-    parser.add_argument("--model_type", type=str, required=True, choices=["baseline", "baseline_aux", "star_only", "star_gno"],
+    parser.add_argument("--model_type", type=str, required=True, choices=["baseline", "baseline_aux", "star_only", "gno_only", "star_gno"],
                         help="Select which model architecture to evaluate.")
     parser.add_argument("--model_path", type=str, required=True, help="Path to trained .pth weights file.")
     parser.add_argument("--test_data_path", type=str, default="data/test_seismic_graphs_processed.pt", help="Path to test dataset.")
@@ -43,6 +43,15 @@ def visualize_reconstruction():
         encoder = STAREncoder(in_channels, time_steps, hidden_dim=256, pos_dim=pos_dim)
         decoder = BaselineDecoder(in_channels, time_steps, hidden_dim=256)
         model = STAREncoderSeismicGNN(star_encoder=encoder, decoder=decoder).to(device)
+    elif args.model_type == "gno_only":
+        encoder = BaselineEncoder(in_channels, time_steps, hidden_dim=256, pos_dim=pos_dim)
+        decoder = GNO_Decoder(
+                    in_channels=in_channels,
+                    time_steps=time_steps,
+                    hidden_dim=256,
+                    pos_dim=pos_dim,
+                )
+        model = GNOSeismicGNN(encoder, decoder)
     elif args.model_type == "star_gno":
         encoder = STAREncoder(
             in_channels, time_steps, hidden_dim=256, pos_dim=pos_dim
@@ -143,6 +152,7 @@ def visualize_reconstruction():
 
 # python visualize_reconstruction.py --model_type baseline --model_path trained_models/seismic_baseline_model.pth --sample_idx 0
 # python visualize_reconstruction.py --model_type star_only --model_path trained_models/star_only_model.pth --sample_idx 0
+# python visualize_reconstruction.py --model_type gno_only --model_path trained_models/gno_only_model.pth --sample_idx 0
 # python visualize_reconstruction.py --model_type star_gno --model_path trained_models/star_gno_model.pth --sample_idx 0
 # python visualize_reconstruction.py --model_type baseline_aux --model_path trained_models/baseline_aux_model.pth --sample_idx 0
 if __name__ == '__main__':
