@@ -117,7 +117,8 @@ def build_event_edges(row, k_neighbors=6, max_radius_km=200.0, v_phase=6.0):
             edge_dst.append(i)  # Target node (receiver)
             
             # Feature vector: [dx, dy, dz, distance_km, phase_delay_sec]
-            edge_attr = np.hstack([delta_p, d_ij, delta_t])
+            # edge_attr = np.hstack([delta_p, d_ij, delta_t])
+            edge_attr = np.hstack([delta_p])
             edge_attrs.append(edge_attr)
             
     if len(edge_src) > 0:
@@ -285,7 +286,7 @@ def plot_event_diagnostic_dashboard(
     - Left: Spatial Graph Geometry, Edge Distances, Coordinates, and Phase Annotations.
     - Right: Synchronized Waveforms with P/S Onset Markers.
     """
-    fig = plt.figure(figsize=(18, 8))
+    fig = plt.figure(figsize=(13, 6))
     ax_graph = fig.add_subplot(1, 2, 1)
 
     # 1. Safely extract core graph tensors
