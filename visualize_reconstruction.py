@@ -3,14 +3,14 @@ import torch
 import matplotlib.pyplot as plt
 
 # Import all possible model architectures and your normalization utility
-from models.baseline_model import BaselineDecoder, BaselineSeismicGNN
+from models.baseline_model import BaselineDecoder, BaselineSeismicGNN, BaselineSeismicGNNWithAux
 from models.gno import GNO_Decoder
 from models.star_encoder_only import STAREncoder, STAREncoderSeismicGNN, STAREncoderGNOSeismicGNN
-# from utils import normalize_data
+from utils import normalize_data
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Unified Seismic Waveform Reconstruction Evaluation")
-    parser.add_argument("--model_type", type=str, required=True, choices=["baseline", "star_only", "star_gno"],
+    parser.add_argument("--model_type", type=str, required=True, choices=["baseline", "baseline_aux", "star_only", "star_gno"],
                         help="Select which model architecture to evaluate.")
     parser.add_argument("--model_path", type=str, required=True, help="Path to trained .pth weights file.")
     parser.add_argument("--test_data_path", type=str, default="data/test_seismic_graphs_processed.pt", help="Path to test dataset.")
@@ -25,6 +25,9 @@ def visualize_reconstruction():
     # 1. Load test dataset and select sample graph
     test_data = torch.load(args.test_data_path, weights_only=False)
     sample_data = test_data[args.sample_idx].to(device)
+    
+    # Optional: Normalize sample data if required by your pipeline
+    sample_data = normalize_data(sample_data)
     print(sample_data)
     
     # 2. Inspect dimensions and dynamically instantiate the chosen model
@@ -34,8 +37,9 @@ def visualize_reconstruction():
     
     if args.model_type == "baseline":
         model = BaselineSeismicGNN(in_channels=in_channels, time_steps=time_steps, hidden_dim=256).to(device)
+    elif args.model_type == "baseline_aux":
+        model = BaselineSeismicGNNWithAux(in_channels=in_channels, time_steps=time_steps, hidden_dim=256, pos_dim=pos_dim).to(device)
     elif args.model_type == "star_only":
-        #in_channels, time_steps, hidden_dim, pos_dim
         encoder = STAREncoder(in_channels, time_steps, hidden_dim=256, pos_dim=pos_dim)
         decoder = BaselineDecoder(in_channels, time_steps, hidden_dim=256)
         model = STAREncoderSeismicGNN(star_encoder=encoder, decoder=decoder).to(device)
@@ -73,7 +77,7 @@ def visualize_reconstruction():
     target_node_idx = masked_indices[0].item()
     print(f"Visualizing reconstruction for masked target station node index: {target_node_idx}")
     
-    # 4. Forward pass: Model automatically isolates target nodes and returns (num_targets, T, C) or (T, C)
+    # 4. Forward pass: Handle dictionary outputs for auxiliary models vs standard tensor outputs
     with torch.no_grad():
         graph_batch = torch.zeros(
             sample_data.num_nodes, dtype=torch.long, device=device
@@ -86,22 +90,27 @@ def visualize_reconstruction():
             batch=graph_batch,
         )
         
-    # Handle matching prediction to our specific target_node_idx
-    if pred.ndim == 3:
-        # Multiple targets: find which position in masked_indices corresponds to target_node_idx
-        target_pos = (masked_indices == target_node_idx).nonzero(as_tuple=True)[0].item()
-        pred_target = pred[target_pos]  # Shape: (T, C)
+    # Unpack dictionary if using BaselineSeismicGNNWithAux
+    if isinstance(pred, dict):
+        pred_waveform_output = pred["waveform"]
     else:
-        pred_target = pred              # Shape: (T, C)
+        pred_waveform_output = pred
         
-    pred_waveform = pred_target.cpu().numpy()  # Shape: (T, C)
+    # Handle matching prediction to our specific target_node_idx
+    if pred_waveform_output.ndim == 3:
+        target_pos = (masked_indices == target_node_idx).nonzero(as_tuple=True)[0].item()
+        pred_target = pred_waveform_output[target_pos]  # Shape: (T, C)
+    else:
+        pred_target = pred_waveform_output             # Shape: (T, C)
+        
+    pred_waveform = pred_target.cpu().numpy()          # Shape: (T, C)
     
     # 5. Determine ground truth waveform
     if hasattr(sample_data, 'y') and sample_data.y is not None:
         if sample_data.y.shape == sample_data.x.shape:
             # y contains all nodes: shape (N, T, C)
             true_waveform = sample_data.y[target_node_idx].cpu().numpy()
-        elif pred.ndim == 3 and sample_data.y.shape == pred.shape:
+        elif pred_waveform_output.ndim == 3 and sample_data.y.shape == pred_waveform_output.shape:
             # y contains only targets with matching shape
             target_pos = (masked_indices == target_node_idx).nonzero(as_tuple=True)[0].item()
             true_waveform = sample_data.y[target_pos].cpu().numpy()
@@ -132,6 +141,9 @@ def visualize_reconstruction():
     plt.show()
 
 
-# python eval.py --model_type baseline --model_path trained_models/seismic_baseline_model.pth --sample_idx 0
+# python visualize_reconstruction.py --model_type baseline --model_path trained_models/seismic_baseline_model.pth --sample_idx 0
+# python visualize_reconstruction.py --model_type star_only --model_path trained_models/star_only_model.pth --sample_idx 0
+# python visualize_reconstruction.py --model_type star_gno --model_path trained_models/star_gno_model.pth --sample_idx 0
+# python visualize_reconstruction.py --model_type baseline_aux --model_path trained_models/baseline_aux_model.pth --sample_idx 0
 if __name__ == '__main__':
     visualize_reconstruction()

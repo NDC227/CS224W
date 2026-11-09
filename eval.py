@@ -4,8 +4,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-# Import your model architectures
-from models.baseline_model import BaselineDecoder, BaselineSeismicGNN
+# Import your model architectures (including the auxiliary baseline model)
+from models.baseline_model import BaselineDecoder, BaselineSeismicGNN, BaselineSeismicGNNWithAux
 from models.star_encoder_only import STAREncoder, STAREncoderSeismicGNN, STAREncoderGNOSeismicGNN
 from models.gno import GNO_Decoder
 
@@ -23,7 +23,7 @@ from loss_functions.peak_amplitude_error import PeakAmplitudeErrorMetric
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate Seismic GNN Metrics on Test Set")
-    parser.add_argument("--model_type", type=str, default="baseline", choices=["baseline", "star_only", "star_gno"])
+    parser.add_argument("--model_type", type=str, default="baseline", choices=["baseline", "baseline_aux", "star_only", "star_gno"])
     parser.add_argument("--model_path", type=str, required=True, help="Path to trained .pth model weights.")
     parser.add_argument("--test_data_path", type=str, default="data/test_seismic_graphs_processed.pt", help="Path to test dataset.")
     parser.add_argument("--mask_ratio", type=float, default=0.25, help="Ratio of nodes to mask for evaluation.")
@@ -48,6 +48,8 @@ def evaluate():
 
     if args.model_type == "baseline":
         model = BaselineSeismicGNN(in_channels=in_channels, time_steps=time_steps, hidden_dim=256).to(device)
+    elif args.model_type == "baseline_aux":
+        model = BaselineSeismicGNNWithAux(in_channels=in_channels, time_steps=time_steps, hidden_dim=256, pos_dim=pos_dim).to(device)
     elif args.model_type == "star_only":
         encoder = STAREncoder(in_channels, time_steps, hidden_dim=256, pos_dim=pos_dim)
         decoder = BaselineDecoder(in_channels, time_steps, hidden_dim=256)
@@ -85,7 +87,7 @@ def evaluate():
             data = data.to(device)
 
             # 1. Extract pre-masked attributes directly from the PyG Data object
-            x_masked = data.x                   # Input waveforms with target nodes zeroed out
+            x_masked = data.x                     # Input waveforms with target nodes zeroed out
             target_mask = data.target_mask.bool() # Boolean tensor indicating target nodes
             mask_channel = data.mask_channel    # Binary indicator feature channel (N, 1)
 
@@ -130,7 +132,7 @@ def evaluate():
                 pred_p_samples = pred_p_norm * T_samples
                 true_p_samples = data.y_p_arrival[target_indices].float()
                 
-                # Compute arrival time error in seconds using your metric
+                # Compute arrival time error in seconds
                 arr_err = arrival_metric(pred_p_samples, true_p_samples)
                 all_arrival_err.append(arr_err.item())
 
@@ -148,7 +150,9 @@ def evaluate():
         print(f"Phase Arrival Time Error (Seconds) [Lower is better]: {torch.tensor(all_arrival_err).mean():.4f}s")
     print("="*40)
 
-# python eval_metrics.py --model_type baseline --model_path trained_models/seismic_baseline_model.pth --test_data_path data/test_seismic_graphs_processed.pt
-# python eval_metrics.py --model_type star_only --model_path trained_models/star_only_model.pth --test_data_path data/test_seismic_graphs_processed.pt
+# python eval.py --model_type baseline --model_path trained_models/seismic_baseline_model.pth --test_data_path data/test_seismic_graphs_processed.pt
+# python eval.py --model_type star_only --model_path trained_models/star_only_model.pth --test_data_path data/test_seismic_graphs_processed.pt
+# python eval.py --model_type star_gno --model_path trained_models/star_gno_model.pth --test_data_path data/test_seismic_graphs_processed.pt
+# python eval.py --model_type baseline_aux --model_path trained_models/baseline_aux_model.pth --test_data_path data/test_seismic_graphs_processed.pt
 if __name__ == '__main__':
     evaluate()
