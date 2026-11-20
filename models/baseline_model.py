@@ -104,6 +104,72 @@ class BaselineDecoder(nn.Module):
         
         return out
 
+class BaselineLinearDecoder(BaselineDecoder):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+class BaselineConvDecoder(nn.Module):
+    """
+    Isolates the target node(s) using mask_channel and progressively upsamples
+    latent features (N, hidden_dim) into waveforms of shape (T, C).
+    """
+
+    def __init__(self, in_channels=3, time_steps=6000, hidden_dim=256):
+        super(BaselineConvDecoder, self).__init__()
+        self.time_steps = time_steps
+        self.in_channels = in_channels
+        self.hidden_dim = hidden_dim
+
+        # 150 * (2 * 5 * 2 * 2) = 150 * 40 = 6000 time steps
+        self.init_channels = 128
+        self.init_steps = 150
+
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_dim, self.init_channels * self.init_steps),
+            nn.GELU(),
+        )
+
+        # Progressive upsampling along the temporal axis:
+        # 150 -> 300 (stride=2) -> 1500 (stride=5) -> 3000 (stride=2) -> 6000 (stride=2)
+        self.upsample = nn.Sequential(
+            nn.ConvTranspose1d(128, 128, kernel_size=4, stride=2, padding=1),
+            nn.GELU(),
+            nn.ConvTranspose1d(128, 64, kernel_size=7, stride=5, padding=1),
+            nn.GELU(),
+            nn.ConvTranspose1d(64, 32, kernel_size=4, stride=2, padding=1),
+            nn.GELU(),
+            nn.ConvTranspose1d(32, 32, kernel_size=4, stride=2, padding=1),
+            nn.GELU(),
+            nn.Conv1d(32, in_channels, kernel_size=3, padding=1),
+        )
+
+    def forward(self, h, mask_channel):
+        T, C = self.time_steps, self.in_channels
+
+        # Match the original BaselineDecoder mask convention
+        target_indices = torch.where(mask_channel.squeeze(-1) == 0.0)[0]
+        if len(target_indices) == 0:
+            target_indices = torch.where(mask_channel.squeeze(-1) != 1.0)[0]
+        if len(target_indices) == 0:
+            raise ValueError("No target nodes found in mask_channel.")
+
+        h_target = h[target_indices]  # (num_targets, hidden_dim)
+        num_targets = h_target.size(0)
+
+        x = self.fc(h_target)  # (num_targets, init_channels * init_steps)
+        x = x.view(num_targets, self.init_channels, self.init_steps)
+        x = self.upsample(x)  # (num_targets, C, T_out)
+
+        if x.size(-1) > T:
+            x = x[..., :T]
+        elif x.size(-1) < T:
+            x = nn.functional.pad(x, (0, T - x.size(-1)))
+
+        out = x.transpose(1, 2)  # (num_targets, T, C)
+        if out.size(0) == 1:
+            out = out.squeeze(0)  # (T, C)
+
+        return out
 
 class BaselineSeismicGNN(nn.Module):
     """

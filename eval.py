@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 # Import your model architectures (including the auxiliary baseline model)
-from models.baseline_model import BaselineEncoder, BaselineDecoder, BaselineSeismicGNN, BaselineSeismicGNNWithAux
+from models.baseline_model import BaselineEncoder, BaselineConvDecoder, BaselineSeismicGNN, BaselineSeismicGNNWithAux
 from models.star_encoder_only import STAREncoder, STAREncoderSeismicGNN, STAREncoderGNOSeismicGNN
 from models.gno import GNO_Decoder, GNOSeismicGNN
 
@@ -52,7 +52,8 @@ def evaluate():
         model = BaselineSeismicGNNWithAux(in_channels=in_channels, time_steps=time_steps, hidden_dim=256, pos_dim=pos_dim).to(device)
     elif args.model_type == "star_only":
         encoder = STAREncoder(in_channels, time_steps, hidden_dim=256, pos_dim=pos_dim)
-        decoder = BaselineDecoder(in_channels, time_steps, hidden_dim=256)
+        # decoder = BaselineLinearDecoder(in_channels, time_steps, hidden_dim=256)
+        decoder = BaselineConvDecoder(in_channels, time_steps, hidden_dim=256)
         model = STAREncoderSeismicGNN(star_encoder=encoder, decoder=decoder).to(device)
     elif args.model_type == "gno_only":
         encoder = BaselineEncoder(in_channels, time_steps, hidden_dim=256, pos_dim=pos_dim)

@@ -3,8 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class ReconstructionLoss(nn.Module):
-    def __init__(self, spectral_weight=0.5, envelope_weight=0.2, n_fft=64, hop_length=16):
+    def __init__(self, time_weight=1, spectral_weight=0.5, envelope_weight=0.2, n_fft=64, hop_length=16):
         super(ReconstructionLoss, self).__init__()
+        self.time_weight = time_weight
         self.spectral_weight = spectral_weight
         self.envelope_weight = envelope_weight
         self.n_fft = n_fft
@@ -44,7 +45,7 @@ class ReconstructionLoss(nn.Module):
         log_mag_true = torch.log(mag_true + 1e-5)
         spectral_loss = F.l1_loss(log_mag_pred, log_mag_true)
         
-        total_loss = time_loss + self.spectral_weight * spectral_loss
+        total_loss = self.time_weight * time_loss + self.spectral_weight * spectral_loss
         
         # 3. Optional Amplitude Envelope Loss (combats energy collapse/attenuation)
         if self.envelope_weight > 0.0:
@@ -56,5 +57,8 @@ class ReconstructionLoss(nn.Module):
             
             env_loss = F.l1_loss(pred_env, true_env)
             total_loss += self.envelope_weight * env_loss
-            
+        else:
+            env_loss = 0
+
+        # print("loss components", time_loss, spectral_loss, env_loss)
         return total_loss

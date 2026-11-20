@@ -8,7 +8,8 @@ from tqdm import tqdm
 # Import architectures and custom loss function
 from models.baseline_model import (
     BaselineEncoder, 
-    BaselineDecoder, 
+    BaselineLinearDecoder, 
+    BaselineConvDecoder,
     BaselineSeismicGNN, 
     BaselineSeismicGNNWithAux
 )
@@ -160,7 +161,7 @@ def main():
         is_aux_model = True
     elif args.model_type == "star_only":
         encoder = STAREncoder(in_channels, time_steps, hidden_dim=256, pos_dim=pos_dim)
-        decoder = BaselineDecoder(in_channels, time_steps, hidden_dim=256)
+        decoder = BaselineConvDecoder(in_channels, time_steps, hidden_dim=256)
         model = STAREncoderSeismicGNN(star_encoder=encoder, decoder=decoder).to(device)
         model_save_path = "trained_models/star_only_model.pth"
     elif args.model_type == "gno_only":
@@ -193,7 +194,11 @@ def main():
         raise ValueError(f"Unknown model type: {args.model_type}")
         
     optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    criterion = ReconstructionLoss(spectral_weight=0.5, envelope_weight=1.0)
+    criterion = ReconstructionLoss(time_weight=1.0,
+                                   spectral_weight=0.5,
+                                   envelope_weight=1.0,
+                                   n_fft=256,
+                                   hop_length=64)
     
     # 3. Training Loop
     best_val_loss = float('inf')
@@ -208,8 +213,8 @@ def main():
             torch.save(model.state_dict(), model_save_path)
             print(f"  --> Saved new best checkpoint to {model_save_path}")
 
-# python train.py --model_type baseline --epochs 20
-# python train.py --model_type star_only --epochs 20
+# python train.py --model_type baseline --epochs 20 --lr 1e-3
+# python train.py --model_type star_only --epochs 20 --lr 1e-3
 # python train.py --model_type gno_only --epochs 20
 # python train.py --model_type star_gno --epochs 20
 # python train.py --model_type baseline_aux --epochs 20
