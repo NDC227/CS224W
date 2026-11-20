@@ -119,6 +119,7 @@ def parse_args():
         help="Model architecture to overfit on a single batch.",
     )
     parser.add_argument("--epochs", type=int, default=200)
+    parser.add_argument("--num_batch", type=int, default=2, help="Number of fixed batches to overfit on.")
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--batch_idx", type=int, default=0, help="Index of sample/batch to overfit on.")
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -182,17 +183,21 @@ def build_model(args, time_steps, in_channels, pos_dim, device):
 
 def main():
     args = parse_args()
+    num_batch = args.num_batch
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device} | Overfitting Model: {args.model_type.upper()}")
+    print(
+        f"Using device: {device} | Overfitting Model: {args.model_type.upper()} | "
+        f"Batches: {num_batch} (batch_size={args.batch_size}, start_idx={args.batch_idx})"
+    )
 
-    # 1. Load dataset and extract a single fixed batch
+    # 1. Load dataset and pin a small set of fixed batches
     train_data = torch.load("data/train_seismic_graphs_processed.pt", weights_only=False)
-    single_batch_loader = DataLoader(
-        train_data[args.batch_idx : args.batch_idx + args.batch_size],
+    batch_loader = DataLoader(
+        train_data[args.batch_idx : args.batch_idx + num_batch * args.batch_size],
         batch_size=args.batch_size,
         shuffle=False,
     )
-    fixed_batch = next(iter(single_batch_loader)).to(device)
+    fixed_batches = [batch.to(device) for batch in batch_loader]
 
     sample_data = train_data[1]
     time_steps = sample_data.x.size(1)
@@ -208,30 +213,41 @@ def main():
         args, time_steps, in_channels, pos_dim, device
     )
     optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    criterion = ReconstructionLoss(time_weight=1.0, 
-                                   spectral_weight=0.2, 
-                                   envelope_weight=1.0, 
-                                   n_fft=256, 
-                                   hop_length=64)
+    criterion = ReconstructionLoss(
+        time_weight=1.0,
+        spectral_weight=0.2,
+        envelope_weight=1.0,
+        n_fft=256,
+        hop_length=64,
+    )
 
-    # 3. Single-batch overfitting loop
+    # 3. Multi-batch overfitting loop
     best_loss = float("inf")
     for epoch in range(1, args.epochs + 1):
-        loss = overfit_step(
-            model, fixed_batch, optimizer, criterion, is_aux_model=is_aux_model
-        )
+        epoch_loss = 0.0
+        for batch in fixed_batches:
+            epoch_loss += overfit_step(
+                model, batch, optimizer, criterion, is_aux_model=is_aux_model
+            )
+        avg_loss = epoch_loss / len(fixed_batches)
 
         if epoch == 1 or epoch % args.log_every == 0 or epoch == args.epochs:
-            print(f"Epoch {epoch:03d}/{args.epochs:03d} | Single-Batch Loss: {loss:.6f}")
+            print(
+                f"Epoch {epoch:03d}/{args.epochs:03d} | "
+                f"{len(fixed_batches)}-Batch Avg Loss: {avg_loss:.6f}"
+            )
 
-        if loss < best_loss:
-            best_loss = loss
-            best_state_dict = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            best_state_dict = {
+                k: v.detach().cpu().clone() for k, v in model.state_dict().items()
+            }
 
     os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
     torch.save(best_state_dict, model_save_path)
     print(f"--> Saved best overfit checkpoint (loss={best_loss:.6f}) to {model_save_path}")
 
-#python batch_overfit.py --model_type star_only --epochs 200 --lr 1e-3
+# python batch_overfit.py --model_type baseline --epochs 200 --lr 1e-3
+# python batch_overfit.py --model_type star_only --epochs 200 --lr 1e-3 --num_batch 4
 if __name__ == "__main__":
     main()

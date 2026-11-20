@@ -16,6 +16,7 @@ from models.gno import GNO_Decoder, GNOSeismicGNN
 from loss_functions.phase_arrival_time_error import PhaseArrivalTimeErrorMetric
 from loss_functions.phase_correlation import PhaseAlignedCrossCorrelationMetric
 from loss_functions.peak_amplitude_error import PeakAmplitudeErrorMetric
+from loss_functions.reconstruction_loss import ReconstructionLoss
 
 # ==========================================
 # 2. Evaluation Runner Script
@@ -85,12 +86,18 @@ def evaluate():
     print("Model weights loaded successfully.\n")
 
     # Initialize metrics
+    recon_loss = ReconstructionLoss(time_weight=1.0,
+                                   spectral_weight=0.2,
+                                   envelope_weight=1.0,
+                                   n_fft=256,
+                                   hop_length=64)
     cc_metric = PhaseAlignedCrossCorrelationMetric(max_lag_samples=20).to(device)
     pae_metric = PeakAmplitudeErrorMetric(relative=True).to(device)
     arrival_metric = PhaseArrivalTimeErrorMetric(sampling_rate=args.sampling_rate).to(device)
 
     # Accumulators for overall test statistics
     all_cc, all_pae, all_arrival_err = [], [], []
+    all_time_loss, all_spectral_loss, all_env_loss = [], [], []
 
     with torch.no_grad():
         for idx, data in enumerate(test_data_list):
@@ -125,43 +132,52 @@ def evaluate():
             if true_targets.ndim == 2:
                 true_targets = true_targets.unsqueeze(0)
 
-            # 5. Compute Waveform Metrics
-            cc_score = cc_metric(pred_targets, true_targets)
-            pae_score = pae_metric(pred_targets, true_targets)
+            time_loss, spectral_loss, env_loss = recon_loss.calc_loss_components(pred_targets, true_targets)
+            all_time_loss.append(time_loss.item())
+            all_spectral_loss.append(spectral_loss.item())
+            all_env_loss.append(env_loss.item())
 
-            all_cc.append(cc_score.item())
-            all_pae.append(pae_score.item())
+    #         # 5. Compute Waveform Metrics
+    #         cc_score = cc_metric(pred_targets, true_targets)
+    #         pae_score = pae_metric(pred_targets, true_targets)
 
-            # 6. Optional: Evaluate Auxiliary Arrival Time Errors (if model outputs a dict and ground truth exists)
-            if isinstance(outputs, dict) and hasattr(data, 'y_p_arrival') and data.y_p_arrival is not None:
-                # Extract predictions for the target nodes
-                pred_p_norm = outputs['p_arrival'][target_indices]
+    #         all_cc.append(cc_score.item())
+    #         all_pae.append(pae_score.item())
+
+    #         # 6. Optional: Evaluate Auxiliary Arrival Time Errors (if model outputs a dict and ground truth exists)
+    #         if isinstance(outputs, dict) and hasattr(data, 'y_p_arrival') and data.y_p_arrival is not None:
+    #             # Extract predictions for the target nodes
+    #             pred_p_norm = outputs['p_arrival'][target_indices]
                 
-                # Convert normalized prediction back to sample indices (since model outputs [0, 1])
-                T_samples = data.x.size(1)
-                pred_p_samples = pred_p_norm * T_samples
-                true_p_samples = data.y_p_arrival[target_indices].float()
+    #             # Convert normalized prediction back to sample indices (since model outputs [0, 1])
+    #             T_samples = data.x.size(1)
+    #             pred_p_samples = pred_p_norm * T_samples
+    #             true_p_samples = data.y_p_arrival[target_indices].float()
                 
-                # Compute arrival time error in seconds
-                arr_err = arrival_metric(pred_p_samples, true_p_samples)
-                all_arrival_err.append(arr_err.item())
+    #             # Compute arrival time error in seconds
+    #             arr_err = arrival_metric(pred_p_samples, true_p_samples)
+    #             all_arrival_err.append(arr_err.item())
 
-            if (idx + 1) % 10 == 0 or (idx + 1) == len(test_data_list):
-                mean_cc = torch.tensor(all_cc).mean().item()
-                print(f"Processed {idx + 1}/{len(test_data_list)} graphs... | Current Mean CC: {mean_cc:.4f}")
+    #         if (idx + 1) % 10 == 0 or (idx + 1) == len(test_data_list):
+    #             mean_cc = torch.tensor(all_cc).mean().item()
+    #             print(f"Processed {idx + 1}/{len(test_data_list)} graphs... | Current Mean CC: {mean_cc:.4f}")
 
-    # Print Final Aggregated Results
-    print("\n" + "="*40)
-    print(f"FINAL TEST SET EVALUATION ({args.model_type.upper()})")
-    print("="*40)
-    print(f"Phase-Aligned Cross-Correlation (CC) [Higher is better]: {torch.tensor(all_cc).mean():.4f} ± {torch.tensor(all_cc).std():.4f}")
-    print(f"Relative Peak Amplitude Error (PAE) [Lower is better]:  {torch.tensor(all_pae).mean():.4f} ± {torch.tensor(all_pae).std():.4f}")
-    if all_arrival_err:
-        print(f"Phase Arrival Time Error (Seconds) [Lower is better]: {torch.tensor(all_arrival_err).mean():.4f}s")
-    print("="*40)
+    # # Print Final Aggregated Results
+    # print("\n" + "="*40)
+    # print(f"FINAL TEST SET EVALUATION ({args.model_type.upper()})")
+    # print("="*40)
+    # print(f"Phase-Aligned Cross-Correlation (CC) [Higher is better]: {torch.tensor(all_cc).mean():.4f} ± {torch.tensor(all_cc).std():.4f}")
+    # print(f"Relative Peak Amplitude Error (PAE) [Lower is better]:  {torch.tensor(all_pae).mean():.4f} ± {torch.tensor(all_pae).std():.4f}")
+    # if all_arrival_err:
+    #     print(f"Phase Arrival Time Error (Seconds) [Lower is better]: {torch.tensor(all_arrival_err).mean():.4f}s")
+    # print("="*40)
+    print("Average time loss:", f"{torch.tensor(all_time_loss).mean():.4f} ± {torch.tensor(all_time_loss).std():.4f}")
+    print("Average spectral loss:", f"{torch.tensor(all_spectral_loss).mean():.4f} ± {torch.tensor(all_spectral_loss).std():.4f}")
+    print("Average envelope loss:", f"{torch.tensor(all_env_loss).mean():.4f} ± {torch.tensor(all_env_loss).std():.4f}")
 
-# python eval.py --model_type baseline --model_path trained_models/seismic_baseline_model.pth --test_data_path data/test_seismic_graphs_processed.pt
+# python eval.py --model_type baseline --model_path trained_models/baseline_model.pth --test_data_path data/test_seismic_graphs_processed.pt
 # python eval.py --model_type star_only --model_path trained_models/star_only_model.pth --test_data_path data/test_seismic_graphs_processed.pt
+# python eval.py --model_type star_only --model_path trained_models/overfit_star_only_model.pth --test_data_path data/test_seismic_graphs_processed.pt
 # python eval.py --model_type gno_only --model_path trained_models/gno_only_model.pth --test_data_path data/test_seismic_graphs_processed.pt
 # python eval.py --model_type star_gno --model_path trained_models/star_gno_model.pth --test_data_path data/test_seismic_graphs_processed.pt
 # python eval.py --model_type baseline_aux --model_path trained_models/baseline_aux_model.pth --test_data_path data/test_seismic_graphs_processed.pt

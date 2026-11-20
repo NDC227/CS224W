@@ -179,7 +179,7 @@ class BaselineSeismicGNN(nn.Module):
     def __init__(self, in_channels=3, time_steps=500, hidden_dim=64, pos_dim=3):
         super(BaselineSeismicGNN, self).__init__()
         self.encoder = BaselineEncoder(in_channels, time_steps, hidden_dim, pos_dim)
-        self.decoder = BaselineDecoder(in_channels, time_steps, hidden_dim)
+        self.decoder = BaselineConvDecoder(in_channels, time_steps, hidden_dim)
 
     def forward(self, x, pos, edge_index, mask_channel, batch=None):
         h = self.encoder(x, pos, edge_index, mask_channel)

@@ -130,6 +130,9 @@ def parse_args():
     parser.add_argument("--lr", 
                         type=float, 
                         default=1e-3)
+    parser.add_argument("--weight_decay",
+                        type=float,
+                        default=0.0)
     return parser.parse_args()
 
 def main():
@@ -193,9 +196,9 @@ def main():
     else:
         raise ValueError(f"Unknown model type: {args.model_type}")
         
-    optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     criterion = ReconstructionLoss(time_weight=1.0,
-                                   spectral_weight=0.5,
+                                   spectral_weight=0.2,
                                    envelope_weight=1.0,
                                    n_fft=256,
                                    hop_length=64)
@@ -214,7 +217,7 @@ def main():
             print(f"  --> Saved new best checkpoint to {model_save_path}")
 
 # python train.py --model_type baseline --epochs 20 --lr 1e-3
-# python train.py --model_type star_only --epochs 20 --lr 1e-3
+# python train.py --model_type star_only --epochs 20 --lr 1e-3 --weight_decay 0.0
 # python train.py --model_type gno_only --epochs 20
 # python train.py --model_type star_gno --epochs 20
 # python train.py --model_type baseline_aux --epochs 20
