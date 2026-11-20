@@ -10,7 +10,7 @@ class STAREncoder(nn.Module):
     Adapted STAR (Spatio-Temporal Graph Transformer) Encoder for Seismic Waves.
     Outputs latent node representations of shape (N, hidden_dim) to match the baseline encoder.
     """
-    def __init__(self, in_channels=3, time_steps=500, hidden_dim=64, pos_dim=3, dropout_prob=0.1):
+    def __init__(self, in_channels=3, time_steps=None, hidden_dim=64, pos_dim=3, dropout_prob=0.1):
         super(STAREncoder, self).__init__()
         self.hidden_dim = hidden_dim
         self.dropout_prob = dropout_prob

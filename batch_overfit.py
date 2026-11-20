@@ -21,28 +21,49 @@ from models.star_encoder_only import (
 )
 from loss_functions.reconstruction_loss import ReconstructionLoss
 
+def get_target_indices(mask_channel):
+    mask_1d = mask_channel.squeeze(-1)
+    target_idx = torch.where(mask_1d == 0.0)[0]
+    if target_idx.numel() == 0:
+        target_idx = torch.where(mask_1d != 1.0)[0]
+    return target_idx
+
 
 def compute_loss(pred, batch, criterion, is_aux_model=False):
-    """Computes reconstruction (and optional auxiliary) loss for a batch."""
     true_waveforms = batch.y
-    # print("pred", pred[0,:])
-    # print("gt", true_waveforms[0,:])
+
+    waveform_pred = pred["waveform"] if is_aux_model else pred
+
+    if true_waveforms.shape != waveform_pred.shape:
+        if true_waveforms.numel() == waveform_pred.numel():
+            true_waveforms = true_waveforms.reshape_as(waveform_pred)
+        elif true_waveforms.size(0) == batch.x.size(0):
+            target_idx = get_target_indices(batch.mask_channel)
+            true_waveforms = true_waveforms[target_idx].reshape_as(waveform_pred)
+
+    assert waveform_pred.shape == true_waveforms.shape, (
+        f"Shape mismatch: pred {waveform_pred.shape} vs target {true_waveforms.shape}"
+    )
 
     if is_aux_model:
-        waveform_pred = pred["waveform"]
         loss_wave = criterion(waveform_pred, true_waveforms)
 
         obs_mask = getattr(
-            batch, "obs_mask", torch.ones_like(pred["p_arrival"], dtype=torch.bool)
+            batch,
+            "obs_mask",
+            torch.ones_like(pred["p_arrival"], dtype=torch.bool),
         )
         loss_p = F.mse_loss(
-            pred["p_arrival"][obs_mask], batch.y_p_arrival_norm[obs_mask]
+            pred["p_arrival"][obs_mask],
+            batch.y_p_arrival_norm.reshape_as(pred["p_arrival"])[obs_mask],
         )
         loss_s = F.mse_loss(
-            pred["s_arrival"][obs_mask], batch.y_s_arrival_norm[obs_mask]
+            pred["s_arrival"][obs_mask],
+            batch.y_s_arrival_norm.reshape_as(pred["s_arrival"])[obs_mask],
         )
         loss_baz = F.mse_loss(
-            pred["baz"][obs_mask], batch.y_baz_norm[obs_mask]
+            pred["baz"][obs_mask],
+            batch.y_baz_norm.reshape_as(pred["baz"])[obs_mask],
         )
 
         lambda_p, lambda_s, lambda_baz = 0.5, 0.5, 0.2
@@ -53,9 +74,7 @@ def compute_loss(pred, batch, criterion, is_aux_model=False):
             + (lambda_baz * loss_baz)
         )
 
-    else:
-        loss = criterion(pred, true_waveforms)
-        return loss
+    return criterion(waveform_pred, true_waveforms)
 
 
 def compute_grad_norm(parameters, norm_type=2.0):
@@ -248,6 +267,6 @@ def main():
     print(f"--> Saved best overfit checkpoint (loss={best_loss:.6f}) to {model_save_path}")
 
 # python batch_overfit.py --model_type baseline --epochs 200 --lr 1e-3
-# python batch_overfit.py --model_type star_only --epochs 200 --lr 1e-3 --num_batch 4
+# python batch_overfit.py --model_type star_only --epochs 200 --lr 1e-3 --num_batch 4 --batch_size 2
 if __name__ == "__main__":
     main()

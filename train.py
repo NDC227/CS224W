@@ -21,6 +21,68 @@ from models.star_encoder_only import (
 )
 from loss_functions.reconstruction_loss import ReconstructionLoss
 
+def _get_target_indices(mask_channel):
+    mask_1d = mask_channel.squeeze(-1)
+    target_idx = torch.where(mask_1d == 0.0)[0]
+    if target_idx.numel() == 0:
+        target_idx = torch.where(mask_1d != 1.0)[0]
+    return target_idx
+
+
+def _align_target_to_pred(target, pred, batch):
+    if target.shape == pred.shape:
+        return target
+    if target.numel() == pred.numel():
+        return target.reshape_as(pred)
+    if target.size(0) == batch.x.size(0):
+        target_idx = _get_target_indices(batch.mask_channel)
+        sliced = target[target_idx]
+        if sliced.numel() == pred.numel():
+            return sliced.reshape_as(pred)
+        return sliced
+    return target
+
+
+def _compute_batch_loss(pred, batch, criterion, is_aux_model=False):
+    true_waveforms = batch.y
+
+    if is_aux_model:
+        waveform_pred = pred["waveform"]
+        aligned_waveforms = _align_target_to_pred(true_waveforms, waveform_pred, batch)
+        assert waveform_pred.shape == aligned_waveforms.shape, (
+            f"Shape mismatch: pred {waveform_pred.shape} vs target {aligned_waveforms.shape}"
+        )
+        loss_wave = criterion(waveform_pred, aligned_waveforms)
+
+        obs_mask = getattr(
+            batch, "obs_mask", torch.ones_like(pred["p_arrival"], dtype=torch.bool)
+        )
+        if obs_mask.shape != pred["p_arrival"].shape and obs_mask.numel() == pred["p_arrival"].numel():
+            obs_mask = obs_mask.reshape_as(pred["p_arrival"])
+
+        p_target = batch.y_p_arrival_norm.reshape_as(pred["p_arrival"])
+        s_target = batch.y_s_arrival_norm.reshape_as(pred["s_arrival"])
+        baz_target = batch.y_baz_norm.reshape_as(pred["baz"])
+
+        loss_p = F.mse_loss(pred["p_arrival"][obs_mask], p_target[obs_mask])
+        loss_s = F.mse_loss(pred["s_arrival"][obs_mask], s_target[obs_mask])
+        loss_baz = F.mse_loss(pred["baz"][obs_mask], baz_target[obs_mask])
+
+        lambda_p, lambda_s, lambda_baz = 0.5, 0.5, 0.2
+        return (
+            loss_wave
+            + (lambda_p * loss_p)
+            + (lambda_s * loss_s)
+            + (lambda_baz * loss_baz)
+        )
+
+    aligned_waveforms = _align_target_to_pred(true_waveforms, pred, batch)
+    assert pred.shape == aligned_waveforms.shape, (
+        f"Shape mismatch: pred {pred.shape} vs target {aligned_waveforms.shape}"
+    )
+    return criterion(pred, aligned_waveforms)
+
+
 def train_epoch(model, loader, optimizer, criterion, device, is_aux_model=False):
     """
     Executes a single training epoch supporting both standard waveform reconstruction
@@ -29,53 +91,20 @@ def train_epoch(model, loader, optimizer, criterion, device, is_aux_model=False)
     model.train()
     total_loss = 0.0
 
-    batch_i = 0
     for batch in tqdm(loader):
         batch = batch.to(device)
         optimizer.zero_grad()
-        
-        # 1. Extract inputs from the pre-masked PyG batch object
-        x_masked = batch.x
-        mask_channel = batch.mask_channel
-        true_waveforms = batch.y 
-        
-        # 2. Forward pass
-        # If using auxiliary model, `pred` is a dictionary: {"waveform", "p_arrival", "s_arrival", "baz"}
-        pred = model(
-            x_masked, batch.pos, batch.edge_index, mask_channel, batch=batch.batch
-        )
 
-        if is_aux_model:
-            waveform_pred = pred["waveform"]
-            
-            # Primary waveform reconstruction loss
-            loss_wave = criterion(waveform_pred, true_waveforms)
-            
-            # Auxiliary losses (computed over observed or applicable nodes using dataset attributes)
-            # Adjust batch attribute names (e.g., batch.p_arrival, batch.obs_mask) to match your dataset schema
-            obs_mask = getattr(batch, "obs_mask", torch.ones_like(pred["p_arrival"], dtype=torch.bool))
-            
-            loss_p = F.mse_loss(pred["p_arrival"][obs_mask], batch.y_p_arrival_norm[obs_mask])
-            loss_s = F.mse_loss(pred["s_arrival"][obs_mask], batch.y_s_arrival_norm[obs_mask])
-            loss_baz = F.mse_loss(pred["baz"][obs_mask], batch.y_baz_norm[obs_mask])
-            
-            # Weighted multi-task loss combination
-            lambda_p, lambda_s, lambda_baz = 0.5, 0.5, 0.2
-            loss = loss_wave + (lambda_p * loss_p) + (lambda_s * loss_s) + (lambda_baz * loss_baz)
-        else:
-            # Standard single-task reconstruction loss
-            loss = criterion(pred, true_waveforms)
-        
-        # 3. Backpropagation & optimization step
+        pred = model(
+            batch.x, batch.pos, batch.edge_index, batch.mask_channel, batch=batch.batch
+        )
+        loss = _compute_batch_loss(pred, batch, criterion, is_aux_model=is_aux_model)
+
         loss.backward()
         optimizer.step()
-        
+
         total_loss += loss.item() * batch.num_graphs
 
-        # batch_i += 1
-        # if batch_i % 10 == 0:
-        #     print(loss.item())
-        
     return total_loss / len(loader.dataset)
 
 
@@ -83,35 +112,18 @@ def evaluate(model, loader, criterion, device, is_aux_model=False):
     """Evaluates the model on validation or test sets without gradient updates."""
     model.eval()
     total_loss = 0.0
-    
+
     with torch.no_grad():
         for batch in loader:
             batch = batch.to(device)
-            
-            x_masked = batch.x
-            mask_channel = batch.mask_channel
-            true_waveforms = batch.y
-            
+
             pred = model(
-                x_masked, batch.pos, batch.edge_index, mask_channel, batch=batch.batch
+                batch.x, batch.pos, batch.edge_index, batch.mask_channel, batch=batch.batch
             )
-            
-            if is_aux_model:
-                waveform_pred = pred["waveform"]
-                loss_wave = criterion(waveform_pred, true_waveforms)
-                
-                obs_mask = getattr(batch, "obs_mask", torch.ones_like(pred["p_arrival"], dtype=torch.bool))
-                loss_p = F.mse_loss(pred["p_arrival"][obs_mask], batch.y_p_arrival_norm[obs_mask])
-                loss_s = F.mse_loss(pred["s_arrival"][obs_mask], batch.y_s_arrival_norm[obs_mask])
-                loss_baz = F.mse_loss(pred["baz"][obs_mask], batch.y_baz_norm[obs_mask])
-                
-                lambda_p, lambda_s, lambda_baz = 0.5, 0.5, 0.2
-                loss = loss_wave + (lambda_p * loss_p) + (lambda_s * loss_s) + (lambda_baz * loss_baz)
-            else:
-                loss = criterion(pred, true_waveforms)
-            
+            loss = _compute_batch_loss(pred, batch, criterion, is_aux_model=is_aux_model)
+
             total_loss += loss.item() * batch.num_graphs
-            
+
     return total_loss / len(loader.dataset)
 
 def parse_args():
@@ -217,7 +229,7 @@ def main():
             print(f"  --> Saved new best checkpoint to {model_save_path}")
 
 # python train.py --model_type baseline --epochs 20 --lr 1e-3
-# python train.py --model_type star_only --epochs 20 --lr 1e-3 --weight_decay 0.0
+# python train.py --model_type star_only --epochs 20 --lr 1e-3 --weight_decay 0.0 --batch_size 2
 # python train.py --model_type gno_only --epochs 20
 # python train.py --model_type star_gno --epochs 20
 # python train.py --model_type baseline_aux --epochs 20
